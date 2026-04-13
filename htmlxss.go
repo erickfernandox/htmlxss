@@ -80,10 +80,14 @@ func main() {
 
 	flag.Parse()
 
-	method = strings.ToLower(strings.TrimSpace(method))
-	if method != "get" && method != "post" {
-		fmt.Fprintf(os.Stderr, "[-] Método inválido: %s. Use -o get ou -o post\n", method)
-		os.Exit(1)
+	var methods []string
+	for _, m := range strings.Split(method, ",") {
+		m = strings.ToLower(strings.TrimSpace(m))
+		if m != "get" && m != "post" {
+			fmt.Fprintf(os.Stderr, "[-] Método inválido: %s. Use -o get, -o post ou -o get,post\n", m)
+			os.Exit(1)
+		}
+		methods = append(methods, m)
 	}
 
 	visto := make(map[string]bool)
@@ -96,14 +100,16 @@ func main() {
 		go func() {
 			defer wg.Done()
 			for v := range targets {
-				var output string
-				if xsspayload != "" {
-					output = xss(v, xsspayload, proxy, poc, method)
-				} else {
-					output = xssDefault(v, proxy, poc, method)
-				}
-				if output != "ERROR" {
-					fmt.Println(output)
+				for _, m := range methods {
+					var output string
+					if xsspayload != "" {
+						output = xss(v, xsspayload, proxy, poc, m)
+					} else {
+						output = xssDefault(v, proxy, poc, m)
+					}
+					if output != "ERROR" {
+						fmt.Println(output)
+					}
 				}
 			}
 		}()
