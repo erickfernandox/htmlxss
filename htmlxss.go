@@ -29,7 +29,7 @@ func init() {
 			"|       -c                    Set Concurrency, Default: 50",
 			"|       -x, --proxy,          Send traffic to a proxy",
 			"|       -s, --only-poc        Show only potentially vulnerable urls",
-			"|       -o                    HTTP Method: get or post (Default: get)",
+			"|       -o                    HTTP Method: get, post ou get,post (Default: get,post)",
 			"|       -h                    Show This Help Message",
 			"|",
 			"+====================================================================================+",
@@ -72,22 +72,28 @@ func main() {
 	flag.BoolVar(&poc, "only-poc", false, "")
 	flag.BoolVar(&poc, "s", false, "")
 
+	// Padrão agora é "get,post" — testa ambos os métodos se -o não for especificado
 	var method string
-	flag.StringVar(&method, "o", "get", "HTTP method: get or post")
+	flag.StringVar(&method, "o", "get,post", "HTTP method: get, post ou get,post (default: get,post)")
 
 	flag.Var(&headers, "headers", "")
 	flag.Var(&headers, "H", "")
 
 	flag.Parse()
 
+	// Parseia e valida os métodos informados
 	var methods []string
+	seen := make(map[string]bool)
 	for _, m := range strings.Split(method, ",") {
 		m = strings.ToLower(strings.TrimSpace(m))
 		if m != "get" && m != "post" {
 			fmt.Fprintf(os.Stderr, "[-] Método inválido: %s. Use -o get, -o post ou -o get,post\n", m)
 			os.Exit(1)
 		}
-		methods = append(methods, m)
+		if !seen[m] {
+			methods = append(methods, m)
+			seen[m] = true
+		}
 	}
 
 	visto := make(map[string]bool)
@@ -182,7 +188,6 @@ func buildRequest(targetURL, payload, method string) (*http.Request, string, err
 		q.Set(key, payload)
 	}
 
-	// se não há params na URL, ainda tenta com o payload direto
 	finalURL := targetURL
 
 	if method == "post" {
